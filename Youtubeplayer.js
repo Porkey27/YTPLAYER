@@ -336,9 +336,10 @@
 
       const cellW = stageW / cols;
       const cellH = stageH / rows;
+      const dotSize = Math.sqrt(cellW * cellW + cellH * cellH) * 1.15;
 
       primitives.pen_penUp(null, util);
-      primitives.pen_setPenSizeTo({ SIZE: Math.max(cellW, cellH) }, util);
+      primitives.pen_setPenSizeTo({ SIZE: dotSize }, util);
 
       for (let row = 0; row < rows; row++) {
         for (let col = 0; col < cols; col++) {
