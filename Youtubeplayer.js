@@ -144,6 +144,15 @@
   class YouTubeBlocks {
     constructor() {
       this.yt = new YouTubePlayer();
+      this.captureStream = null;
+      this.captureVideo = null;
+      this.sampleCanvas = null;
+      this.sampleCtx = null;
+      // best-effort: make sure Pen's primitives exist without forcing the user
+      // to manually add the Pen extension first
+      if (vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
+        vm.extensionManager.loadExtensionURL('pen').catch(() => {});
+      }
     }
 
     getInfo() {
@@ -206,7 +215,18 @@
           { opcode: 'currentTime', blockType: Scratch.BlockType.REPORTER, text: 'current time (s)' },
           { opcode: 'duration', blockType: Scratch.BlockType.REPORTER, text: 'duration (s)' },
           { opcode: 'isPlaying', blockType: Scratch.BlockType.BOOLEAN, text: 'is playing?' },
-          { opcode: 'hasEnded', blockType: Scratch.BlockType.BOOLEAN, text: 'has ended?' }
+          { opcode: 'hasEnded', blockType: Scratch.BlockType.BOOLEAN, text: 'has ended?' },
+          '---',
+          { opcode: 'startCapture', blockType: Scratch.BlockType.COMMAND, text: 'start screen capture for pen drawing' },
+          { opcode: 'stopCapture', blockType: Scratch.BlockType.COMMAND, text: 'stop screen capture' },
+          { opcode: 'isCapturing', blockType: Scratch.BlockType.BOOLEAN, text: 'is capturing?' },
+          {
+            opcode: 'drawFrame',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'draw current frame with pen (columns [COLS])',
+            arguments: { COLS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 24 } }
+          },
+          { opcode: 'clearPenFrame', blockType: Scratch.BlockType.COMMAND, text: 'clear pen frame' }
         ],
         menus: {
           visMenu: { acceptReporters: true, items: ['visible', 'hidden'] },
@@ -246,6 +266,102 @@
     duration() { return this.yt.player?.getDuration?.() ?? 0; }
     isPlaying() { return this.yt.player?.getPlayerState?.() === 1; }
     hasEnded() { return this.yt.ended; }
+
+    async startCapture() {
+      if (this.captureStream) return;
+      try {
+        this.captureStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface: 'browser' },
+          audio: false
+        });
+      } catch (e) {
+        console.warn('[youtubeplayer] screen capture denied or cancelled:', e);
+        this.captureStream = null;
+        return;
+      }
+      this.captureVideo = document.createElement('video');
+      this.captureVideo.srcObject = this.captureStream;
+      this.captureVideo.muted = true;
+      await this.captureVideo.play();
+      const track = this.captureStream.getVideoTracks()[0];
+      if (track) {
+        track.onended = () => {
+          this.captureStream = null;
+          this.captureVideo = null;
+        };
+      }
+    }
+
+    stopCapture() {
+      this.captureStream?.getTracks().forEach((t) => t.stop());
+      this.captureStream = null;
+      this.captureVideo = null;
+    }
+
+    isCapturing() {
+      return !!this.captureStream;
+    }
+
+    drawFrame(args, util) {
+      if (!this.captureVideo) {
+        console.warn('[youtubeplayer] call "start screen capture" first');
+        return;
+      }
+      const primitives = vm.runtime._primitives;
+      if (!primitives.pen_penDown) {
+        console.warn('[youtubeplayer] Pen extension not loaded yet');
+        return;
+      }
+
+      const cols = Math.max(2, Math.min(80, Math.round(Number(args.COLS) || 24)));
+      const stageW = vm.runtime.stageWidth || 480;
+      const stageH = vm.runtime.stageHeight || 360;
+      const rows = Math.max(2, Math.round(cols * (stageH / stageW)));
+
+      if (!this.sampleCanvas) {
+        this.sampleCanvas = document.createElement('canvas');
+        this.sampleCtx = this.sampleCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      this.sampleCanvas.width = cols;
+      this.sampleCanvas.height = rows;
+      this.sampleCtx.drawImage(this.captureVideo, 0, 0, cols, rows);
+
+      let data;
+      try {
+        data = this.sampleCtx.getImageData(0, 0, cols, rows).data;
+      } catch (e) {
+        console.warn('[youtubeplayer] frame read blocked unexpectedly:', e);
+        return;
+      }
+
+      const cellW = stageW / cols;
+      const cellH = stageH / rows;
+
+      primitives.pen_penUp(null, util);
+      primitives.pen_setPenSizeTo({ SIZE: Math.max(cellW, cellH) }, util);
+
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const i = (row * cols + col) * 4;
+          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+          if (a < 10) continue;
+          const x = -stageW / 2 + cellW * (col + 0.5);
+          const y = stageH / 2 - cellH * (row + 0.5);
+          util.target.setXY(x, y, true);
+          primitives.pen_setPenColorToColor({ COLOR: this._rgbToHex(r, g, b) }, util);
+          primitives.pen_penDown(null, util);
+          primitives.pen_penUp(null, util);
+        }
+      }
+    }
+
+    clearPenFrame(args, util) {
+      vm.runtime._primitives.pen_clear?.(null, util);
+    }
+
+    _rgbToHex(r, g, b) {
+      return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+    }
   }
 
   Scratch.extensions.register(new YouTubeBlocks());
