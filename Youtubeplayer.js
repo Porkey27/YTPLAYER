@@ -12,6 +12,7 @@
       this.apiReady = false;
       this.pendingId = null;
       this.ended = false;
+      this.loop = false;
       this._loadAPI();
       this._buildOverlay();
     }
@@ -78,11 +79,36 @@
         width: '100%',
         height: '100%',
         videoId,
-        playerVars: { autoplay: 1, controls: 0, modestbranding: 1, rel: 0, playsinline: 1 },
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          playsinline: 1,
+          cc_load_policy: 0,
+          iv_load_policy: 3,
+          disablekb: 1,
+          fs: 0,
+          origin: window.location.origin
+        },
         events: {
-          onReady: (e) => e.target.playVideo(),
+          onReady: (e) => {
+            e.target.playVideo();
+            // belt-and-braces: cc_load_policy only sets the default,
+            // this forces captions off even if a channel forces them on
+            if (typeof e.target.unloadModule === 'function') {
+              e.target.unloadModule('captions');
+            }
+          },
           onStateChange: (e) => {
-            if (e.data === YT.PlayerState.ENDED) this.ended = true;
+            if (e.data === YT.PlayerState.ENDED) {
+              if (this.loop) {
+                e.target.seekTo(0, true);
+                e.target.playVideo();
+              } else {
+                this.ended = true;
+              }
+            }
           }
         }
       });
@@ -167,6 +193,15 @@
               STATE: { type: Scratch.ArgumentType.STRING, menu: 'visMenu', defaultValue: 'visible' }
             }
           },
+          {
+            opcode: 'setLoop',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'set loop to [STATE]',
+            arguments: {
+              STATE: { type: Scratch.ArgumentType.STRING, menu: 'onOffMenu', defaultValue: 'on' }
+            }
+          },
+          { opcode: 'isLooping', blockType: Scratch.BlockType.BOOLEAN, text: 'is loop on?' },
           '---',
           { opcode: 'currentTime', blockType: Scratch.BlockType.REPORTER, text: 'current time (s)' },
           { opcode: 'duration', blockType: Scratch.BlockType.REPORTER, text: 'duration (s)' },
@@ -174,7 +209,8 @@
           { opcode: 'hasEnded', blockType: Scratch.BlockType.BOOLEAN, text: 'has ended?' }
         ],
         menus: {
-          visMenu: { acceptReporters: true, items: ['visible', 'hidden'] }
+          visMenu: { acceptReporters: true, items: ['visible', 'hidden'] },
+          onOffMenu: { acceptReporters: true, items: ['on', 'off'] }
         }
       };
     }
@@ -203,6 +239,8 @@
     seekTo(args) { this.yt.player?.seekTo?.(Number(args.SECONDS), true); }
     setVolume(args) { this.yt.player?.setVolume?.(Math.max(0, Math.min(100, Number(args.PCT)))); }
     showHide(args) { this.yt.setVisible(args.STATE === 'visible'); }
+    setLoop(args) { this.yt.loop = args.STATE === 'on'; }
+    isLooping() { return this.yt.loop; }
 
     currentTime() { return this.yt.player?.getCurrentTime?.() ?? 0; }
     duration() { return this.yt.player?.getDuration?.() ?? 0; }
