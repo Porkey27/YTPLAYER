@@ -313,7 +313,7 @@
         return;
       }
 
-      const cols = Math.max(2, Math.min(300, Math.round(Number(args.COLS) || 24)));
+      const cols = Math.max(2, Math.min(1000, Math.round(Number(args.COLS) || 24)));
       const stageW = vm.runtime.stageWidth || 480;
       const stageH = vm.runtime.stageHeight || 360;
       const rows = Math.max(2, Math.round(cols * (stageH / stageW)));
