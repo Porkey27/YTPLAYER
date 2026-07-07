@@ -157,6 +157,7 @@
       this._scanlinesOn = false;
       this._field = 0;
       this._persistence = 0;
+      this._needsClear = true;
       // best-effort: make sure Pen's primitives exist without forcing the user
       // to manually add the Pen extension first
       if (vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
@@ -414,8 +415,11 @@
       const dotSize = Math.sqrt(cellW * cellW + cellH * cellH) * 1.15;
 
       const field = this._field;
-      if (!this._scanlinesOn || field === 0) {
+      if (!this._scanlinesOn) {
         this._washFrame(primitives, util, stageW, stageH);
+      } else if (this._needsClear) {
+        this._washFrame(primitives, util, stageW, stageH);
+        this._needsClear = false;
       }
       primitives.pen_penUp(null, util);
       primitives.pen_setPenSizeTo({ SIZE: dotSize }, util);
@@ -429,6 +433,9 @@
 
       const colX = (col) => -stageW / 2 + cellW * (col + 0.5);
       const colY = (row) => stageH / 2 - cellH * (row + 0.5);
+      // in curved mode, a run this long or longer gets forcibly split, so a straight
+      // line segment never has to stand in for too much of the true curve at once
+      const MAX_RUN = this._scanlinesOn ? Math.max(2, Math.ceil(cols / 12)) : Infinity;
 
       for (let row = 0; row < rows; row++) {
         if (this._scanlinesOn && row % 2 !== field) continue;
@@ -440,7 +447,7 @@
           if (runStart === -1) return;
           const startCol = runStart;
           const endCol = endColExclusive - 1;
-          let xStart, xEnd, y;
+          let xStart, xEnd, yStart, yEnd;
           if (this._scanlinesOn) {
             const nyRow = ((row + 0.5) / rows) * 2 - 1;
             const nxS = ((startCol + 0.5) / cols) * 2 - 1;
@@ -451,16 +458,17 @@
             const cfE = (1 + CURVE_K * r2E) / CURVE_NORM;
             xStart = nxS * cfS * (stageW / 2);
             xEnd = nxE * cfE * (stageW / 2);
-            y = -nyRow * cfS * (stageH / 2);
+            yStart = -nyRow * cfS * (stageH / 2);
+            yEnd = -nyRow * cfE * (stageH / 2);
           } else {
             xStart = colX(startCol);
             xEnd = colX(endCol);
-            y = colY(row);
+            yStart = yEnd = colY(row);
           }
-          util.target.setXY(xStart, y, true);
+          util.target.setXY(xStart, yStart, true);
           primitives.pen_setPenColorToColor({ COLOR: runHex }, util);
           primitives.pen_penDown(null, util);
-          util.target.setXY(xEnd, y, true);
+          util.target.setXY(xEnd, yEnd, true);
           primitives.pen_penUp(null, util);
           runStart = -1;
           runHex = null;
@@ -487,7 +495,7 @@
             );
           }
 
-          if (hex !== runHex) {
+          if (hex !== runHex || (col - runStart) >= MAX_RUN) {
             flushRun(col);
             if (hex !== null) {
               runStart = col;
@@ -507,6 +515,7 @@
       this.stopLiveDraw();
       this._liveUtil = util;
       this._liveCols = Number(args.COLS) || 24;
+      this._needsClear = true;
       const fps = Math.max(1, Math.min(30, Number(args.FPS) || 8));
       this._liveTimer = setInterval(() => {
         if (!this.captureVideo) return;
@@ -528,6 +537,7 @@
     setScanlines(args) {
       this._scanlinesOn = args.STATE === 'on';
       this._field = 0;
+      this._needsClear = true;
     }
 
     isScanlines() {
