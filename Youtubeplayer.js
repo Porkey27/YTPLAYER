@@ -6,6 +6,9 @@
 
   const vm = Scratch.vm;
 
+  const HEX_BYTE = new Array(256);
+  for (let i = 0; i < 256; i++) HEX_BYTE[i] = i.toString(16).padStart(2, '0');
+
   class YouTubePlayer {
     constructor() {
       this.player = null;
@@ -406,19 +409,82 @@
       primitives.pen_penUp(null, util);
       primitives.pen_setPenSizeTo({ SIZE: dotSize }, util);
 
+      // subtle frame-to-frame brightness instability, like an unregulated CRT beam
+      const flicker = this._scanlinesOn ? 0.92 + Math.random() * 0.08 : 1;
+      const CURVE_K = 0.18; // barrel curvature strength
+      const CURVE_NORM = 1 + CURVE_K * 2; // normalizes corners back to the frame edge
+      const VIGNETTE_STRENGTH = 0.35;
+      const QUANT = 16; // color bucket size — lets near-identical cells merge into one run
+
+      const colX = (col) => -stageW / 2 + cellW * (col + 0.5);
+      const colY = (row) => stageH / 2 - cellH * (row + 0.5);
+
       for (let row = 0; row < rows; row++) {
         if (this._scanlinesOn && row % 2 !== field) continue;
+
+        let runStart = -1;
+        let runHex = null;
+
+        const flushRun = (endColExclusive) => {
+          if (runStart === -1) return;
+          const startCol = runStart;
+          const endCol = endColExclusive - 1;
+          let xStart, xEnd, y;
+          if (this._scanlinesOn) {
+            const nyRow = ((row + 0.5) / rows) * 2 - 1;
+            const nxS = ((startCol + 0.5) / cols) * 2 - 1;
+            const nxE = ((endCol + 0.5) / cols) * 2 - 1;
+            const r2S = nxS * nxS + nyRow * nyRow;
+            const r2E = nxE * nxE + nyRow * nyRow;
+            const cfS = (1 + CURVE_K * r2S) / CURVE_NORM;
+            const cfE = (1 + CURVE_K * r2E) / CURVE_NORM;
+            xStart = nxS * cfS * (stageW / 2);
+            xEnd = nxE * cfE * (stageW / 2);
+            y = -nyRow * cfS * (stageH / 2);
+          } else {
+            xStart = colX(startCol);
+            xEnd = colX(endCol);
+            y = colY(row);
+          }
+          util.target.setXY(xStart, y, true);
+          primitives.pen_setPenColorToColor({ COLOR: runHex }, util);
+          primitives.pen_penDown(null, util);
+          util.target.setXY(xEnd, y, true);
+          primitives.pen_penUp(null, util);
+          runStart = -1;
+          runHex = null;
+        };
+
         for (let col = 0; col < cols; col++) {
           const i = (row * cols + col) * 4;
-          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-          if (a < 10) continue;
-          const x = -stageW / 2 + cellW * (col + 0.5);
-          const y = stageH / 2 - cellH * (row + 0.5);
-          util.target.setXY(x, y, true);
-          primitives.pen_setPenColorToColor({ COLOR: this._rgbToHex(r, g, b) }, util);
-          primitives.pen_penDown(null, util);
-          primitives.pen_penUp(null, util);
+          const a = data[i + 3];
+
+          let hex = null;
+          if (a >= 10) {
+            let r = data[i], g = data[i + 1], b = data[i + 2];
+            if (this._scanlinesOn) {
+              const nx = ((col + 0.5) / cols) * 2 - 1;
+              const ny = ((row + 0.5) / rows) * 2 - 1;
+              const r2 = nx * nx + ny * ny;
+              const vignette = (1 - VIGNETTE_STRENGTH * (r2 / 2)) * flicker;
+              r *= vignette; g *= vignette; b *= vignette;
+            }
+            hex = this._rgbToHex(
+              Math.round(r / QUANT) * QUANT,
+              Math.round(g / QUANT) * QUANT,
+              Math.round(b / QUANT) * QUANT
+            );
+          }
+
+          if (hex !== runHex) {
+            flushRun(col);
+            if (hex !== null) {
+              runStart = col;
+              runHex = hex;
+            }
+          }
         }
+        flushRun(cols);
       }
 
       if (this._scanlinesOn) {
@@ -462,7 +528,8 @@
     }
 
     _rgbToHex(r, g, b) {
-      return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+      const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+      return '#' + HEX_BYTE[clamp(r)] + HEX_BYTE[clamp(g)] + HEX_BYTE[clamp(b)];
     }
   }
 
