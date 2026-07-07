@@ -148,6 +148,11 @@
       this.captureVideo = null;
       this.sampleCanvas = null;
       this.sampleCtx = null;
+      this._liveTimer = null;
+      this._liveUtil = null;
+      this._liveCols = 24;
+      this._scanlinesOn = false;
+      this._field = 0;
       // best-effort: make sure Pen's primitives exist without forcing the user
       // to manually add the Pen extension first
       if (vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
@@ -226,6 +231,35 @@
             text: 'draw current frame with pen (columns [COLS])',
             arguments: { COLS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 24 } }
           },
+          {
+            opcode: 'drawThumbnail',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'draw thumbnail of [URL] with pen (columns [COLS]) — no capture needed',
+            arguments: {
+              URL: { type: Scratch.ArgumentType.STRING, defaultValue: 'https://youtu.be/dQw4w9WgXcQ' },
+              COLS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 24 }
+            }
+          },
+          {
+            opcode: 'startLiveDraw',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'start real-time pen drawing (columns [COLS], fps [FPS])',
+            arguments: {
+              COLS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 24 },
+              FPS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 8 }
+            }
+          },
+          { opcode: 'stopLiveDraw', blockType: Scratch.BlockType.COMMAND, text: 'stop real-time pen drawing' },
+          { opcode: 'isLiveDrawing', blockType: Scratch.BlockType.BOOLEAN, text: 'is real-time drawing running?' },
+          {
+            opcode: 'setScanlines',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'set CRT scanlines to [STATE]',
+            arguments: {
+              STATE: { type: Scratch.ArgumentType.STRING, menu: 'onOffMenu', defaultValue: 'on' }
+            }
+          },
+          { opcode: 'isScanlines', blockType: Scratch.BlockType.BOOLEAN, text: 'are scanlines on?' },
           { opcode: 'clearPenFrame', blockType: Scratch.BlockType.COMMAND, text: 'clear pen frame' }
         ],
         menus: {
@@ -293,6 +327,7 @@
     }
 
     stopCapture() {
+      this.stopLiveDraw();
       this.captureStream?.getTracks().forEach((t) => t.stop());
       this.captureStream = null;
       this.captureVideo = null;
@@ -307,13 +342,39 @@
         console.warn('[youtubeplayer] call "start screen capture" first');
         return;
       }
+      this._drawSourceWithPen(this.captureVideo, args.COLS, util);
+    }
+
+    async drawThumbnail(args, util) {
+      const id = this.yt.extractId(args.URL);
+      let img;
+      try {
+        img = await this._loadImage(`https://img.youtube.com/vi/${id}/hqdefault.jpg`);
+      } catch (e) {
+        console.warn('[youtubeplayer] could not load thumbnail (bad URL or network):', e);
+        return;
+      }
+      this._drawSourceWithPen(img, args.COLS, util);
+    }
+
+    _loadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
+
+    _drawSourceWithPen(source, colsArg, util) {
       const primitives = vm.runtime._primitives;
       if (!primitives.pen_penDown) {
         console.warn('[youtubeplayer] Pen extension not loaded yet');
         return;
       }
 
-      const cols = Math.max(2, Math.min(1000, Math.round(Number(args.COLS) || 24)));
+      const cols = Math.max(2, Math.min(1000, Math.round(Number(colsArg) || 24)));
       const stageW = vm.runtime.stageWidth || 480;
       const stageH = vm.runtime.stageHeight || 360;
       const rows = Math.max(2, Math.round(cols * (stageH / stageW)));
@@ -324,13 +385,13 @@
       }
       this.sampleCanvas.width = cols;
       this.sampleCanvas.height = rows;
-      this.sampleCtx.drawImage(this.captureVideo, 0, 0, cols, rows);
+      this.sampleCtx.drawImage(source, 0, 0, cols, rows);
 
       let data;
       try {
         data = this.sampleCtx.getImageData(0, 0, cols, rows).data;
       } catch (e) {
-        console.warn('[youtubeplayer] frame read blocked unexpectedly:', e);
+        console.warn('[youtubeplayer] frame read blocked (CORS):', e);
         return;
       }
 
@@ -338,10 +399,15 @@
       const cellH = stageH / rows;
       const dotSize = Math.sqrt(cellW * cellW + cellH * cellH) * 1.15;
 
+      const field = this._field;
+      if (!this._scanlinesOn || field === 0) {
+        primitives.pen_clear(null, util);
+      }
       primitives.pen_penUp(null, util);
       primitives.pen_setPenSizeTo({ SIZE: dotSize }, util);
 
       for (let row = 0; row < rows; row++) {
+        if (this._scanlinesOn && row % 2 !== field) continue;
         for (let col = 0; col < cols; col++) {
           const i = (row * cols + col) * 4;
           const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
@@ -354,6 +420,41 @@
           primitives.pen_penUp(null, util);
         }
       }
+
+      if (this._scanlinesOn) {
+        this._field = 1 - field;
+      }
+    }
+
+    startLiveDraw(args, util) {
+      this.stopLiveDraw();
+      this._liveUtil = util;
+      this._liveCols = Number(args.COLS) || 24;
+      const fps = Math.max(1, Math.min(30, Number(args.FPS) || 8));
+      this._liveTimer = setInterval(() => {
+        if (!this.captureVideo) return;
+        this._drawSourceWithPen(this.captureVideo, this._liveCols, this._liveUtil);
+      }, 1000 / fps);
+    }
+
+    stopLiveDraw() {
+      if (this._liveTimer) {
+        clearInterval(this._liveTimer);
+        this._liveTimer = null;
+      }
+    }
+
+    isLiveDrawing() {
+      return this._liveTimer !== null;
+    }
+
+    setScanlines(args) {
+      this._scanlinesOn = args.STATE === 'on';
+      this._field = 0;
+    }
+
+    isScanlines() {
+      return this._scanlinesOn;
     }
 
     clearPenFrame(args, util) {
