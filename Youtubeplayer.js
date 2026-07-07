@@ -156,6 +156,7 @@
       this._liveCols = 24;
       this._scanlinesOn = false;
       this._field = 0;
+      this._persistence = 0;
       // best-effort: make sure Pen's primitives exist without forcing the user
       // to manually add the Pen extension first
       if (vm.extensionManager && !vm.extensionManager.isExtensionLoaded('pen')) {
@@ -225,7 +226,7 @@
           { opcode: 'isPlaying', blockType: Scratch.BlockType.BOOLEAN, text: 'is playing?' },
           { opcode: 'hasEnded', blockType: Scratch.BlockType.BOOLEAN, text: 'has ended?' },
           '---',
-          { opcode: 'startCapture', blockType: Scratch.BlockType.COMMAND, text: 'start screen capture for pen drawing' },
+          { opcode: 'startCapture', blockType: Scratch.BlockType.COMMAND, text: 'start screen capture (pick a DIFFERENT tab/window, not this one!)' },
           { opcode: 'stopCapture', blockType: Scratch.BlockType.COMMAND, text: 'stop screen capture' },
           { opcode: 'isCapturing', blockType: Scratch.BlockType.BOOLEAN, text: 'is capturing?' },
           {
@@ -263,6 +264,12 @@
             }
           },
           { opcode: 'isScanlines', blockType: Scratch.BlockType.BOOLEAN, text: 'are scanlines on?' },
+          {
+            opcode: 'setPersistence',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'set phosphor persistence to [PCT] % (0 = instant clear)',
+            arguments: { PCT: { type: Scratch.ArgumentType.NUMBER, defaultValue: 0 } }
+          },
           { opcode: 'clearPenFrame', blockType: Scratch.BlockType.COMMAND, text: 'clear pen frame' }
         ],
         menus: {
@@ -320,6 +327,10 @@
       this.captureVideo.srcObject = this.captureStream;
       this.captureVideo.muted = true;
       await this.captureVideo.play();
+      console.warn(
+        '[youtubeplayer] reminder: if you picked THIS tab, every capture will include ' +
+        'your own last pen drawing (feedback loop) — pick a separate tab/window instead.'
+      );
       const track = this.captureStream.getVideoTracks()[0];
       if (track) {
         track.onended = () => {
@@ -404,7 +415,7 @@
 
       const field = this._field;
       if (!this._scanlinesOn || field === 0) {
-        primitives.pen_clear(null, util);
+        this._washFrame(primitives, util, stageW, stageH);
       }
       primitives.pen_penUp(null, util);
       primitives.pen_setPenSizeTo({ SIZE: dotSize }, util);
@@ -521,6 +532,31 @@
 
     isScanlines() {
       return this._scanlinesOn;
+    }
+
+    setPersistence(args) {
+      this._persistence = Math.max(0, Math.min(99, Number(args.PCT) || 0));
+    }
+
+    _washFrame(primitives, util, stageW, stageH) {
+      if (this._persistence <= 0) {
+        primitives.pen_clear(null, util);
+        return;
+      }
+      // draw one thick translucent black bar across the whole stage instead of
+      // clearing — old pen content fades rather than cutting instantly, like
+      // phosphor decay. transparency param: 0 = opaque wash (full clear),
+      // 100 = invisible wash (infinite trail) — persistence maps directly.
+      primitives.pen_penUp(null, util);
+      primitives.pen_setPenSizeTo({ SIZE: stageH * 1.1 }, util);
+      primitives.pen_setPenColorToColor({ COLOR: '#000000' }, util);
+      primitives.pen_setPenColorParamTo({ COLOR_PARAM: 'transparency', VALUE: this._persistence }, util);
+      util.target.setXY(-stageW / 2, 0, true);
+      primitives.pen_penDown(null, util);
+      util.target.setXY(stageW / 2, 0, true);
+      primitives.pen_penUp(null, util);
+      // reset transparency so subsequent dot colors aren't accidentally translucent
+      primitives.pen_setPenColorParamTo({ COLOR_PARAM: 'transparency', VALUE: 0 }, util);
     }
 
     clearPenFrame(args, util) {
